@@ -131,7 +131,10 @@ void MethodSwizzle(Class c, SEL originalSelector) {
 {
     // Call existing method
     [self swizzled_application:application didReceiveRemoteNotification:userInfo];
-    [PFPush handlePush:userInfo];
+    if (application.applicationState != UIApplicationStateActive )
+    {
+        [PFPush handlePush:userInfo];
+    }
 }
 
 @end
