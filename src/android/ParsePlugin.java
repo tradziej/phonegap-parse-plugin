@@ -7,21 +7,34 @@ import java.util.Set;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
+import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.CordovaInterface;
+
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import com.parse.Parse;
 import com.parse.ParseInstallation;
 import com.parse.PushService;
 
+import android.util.Log;
+
 public class ParsePlugin extends CordovaPlugin {
-    public static final String TAG = "ParsePlugin";
-    public static final String ACTION_INITIALIZE = "initialize";
-    public static final String ACTION_GET_INSTALLATION_ID = "getInstallationId";
-    public static final String ACTION_GET_INSTALLATION_OBJECT_ID = "getInstallationObjectId";
-    public static final String ACTION_GET_SUBSCRIPTIONS = "getSubscriptions";
-    public static final String ACTION_SUBSCRIBE = "subscribe";
-    public static final String ACTION_UNSUBSCRIBE = "unsubscribe";
+
+    private static final String TAG = "ParsePlugin";
+    private static final String ACTION_INITIALIZE = "initialize";
+    private static final String ACTION_GET_INSTALLATION_ID = "getInstallationId";
+    private static final String ACTION_GET_INSTALLATION_OBJECT_ID = "getInstallationObjectId";
+    private static final String ACTION_GET_SUBSCRIPTIONS = "getSubscriptions";
+    private static final String ACTION_SUBSCRIBE = "subscribe";
+    private static final String ACTION_UNSUBSCRIBE = "unsubscribe";
+    private static final String ACTION_REGISTER_CALLBACK = "registerCallback";
+
+    private static CordovaWebView sWebView;
+    private static String sEventCallback = null;
+    private static boolean sForeground = false;
+    private static JSONObject sLaunchNotification = null;
 
     public static void initializeParseWithApplication(Application app) {
         String appId = getStringByKey(app, "parse_app_id");
@@ -38,6 +51,10 @@ public class ParsePlugin extends CordovaPlugin {
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
+        if (action.equals(ACTION_REGISTER_CALLBACK)) {
+            this.registerCallback(callbackContext, args);
+            return true;
+        }
         if (action.equals(ACTION_INITIALIZE)) {
             this.initialize(callbackContext, args);
             return true;
@@ -66,12 +83,33 @@ public class ParsePlugin extends CordovaPlugin {
         return false;
     }
 
+    private void registerCallback(final CallbackContext callbackContext, final JSONArray args) {
+        cordova.getThreadPool().execute(new Runnable() {
+            public void run() {
+                try {
+                    sEventCallback = args.getString(0);
+                    callbackContext.success();
+                    // if the app was opened from a notification, handle it now that the device is ready
+                    handleLaunchNotification();
+                } catch (JSONException e) {
+                    callbackContext.error("JSONException");
+                }
+            }
+        });
+    }
+
     private void initialize(final CallbackContext callbackContext, final JSONArray args) {
         cordova.getThreadPool().execute(new Runnable() {
             public void run() {
-            PushService.setDefaultPushCallback(cordova.getActivity(), cordova.getActivity().getClass());
-            ParseInstallation.getCurrentInstallation().saveInBackground();
-            callbackContext.success();
+                try {
+                    String appId = args.getString(0);
+                    String clientKey = args.getString(1);
+                    Parse.initialize(cordova.getActivity(), appId, clientKey);
+                    ParseInstallation.getCurrentInstallation().saveInBackground();
+                    callbackContext.success();
+                } catch (JSONException e) {
+                    callbackContext.error("JSONException");
+                }
             }
         });
     }
@@ -121,5 +159,57 @@ public class ParsePlugin extends CordovaPlugin {
         });
     }
 
-}
+    /*
+    * Use the cordova bridge to call the jsCB and pass it jsonPayload as param
+    */
+    public static void javascriptEventCallback(JSONObject jsonPayload) {
+        if (sEventCallback != null && !sEventCallback.isEmpty() && sWebView != null) {
+            String snippet = "javascript:" + sEventCallback + "(" + jsonPayload.toString() + ")";
+            Log.v(TAG, "javascriptCB: " + snippet);
+            sWebView.sendJavascript(snippet);
+        }
+    }
 
+    @Override
+    public void initialize(CordovaInterface cordova, CordovaWebView webView) {
+        super.initialize(cordova, webView);
+        sEventCallback = null;
+        sWebView = this.webView;
+        sForeground = true;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        sEventCallback = null;
+        sWebView = null;
+        sForeground = false;
+    }
+
+    @Override
+    public void onPause(boolean multitasking) {
+        super.onPause(multitasking);
+        sForeground = false;
+    }
+
+    @Override
+    public void onResume(boolean multitasking) {
+        super.onResume(multitasking);
+        sForeground = true;
+    }
+
+    public static boolean isInForeground() {
+        return sForeground;
+    }
+
+    public static void setLaunchNotification(JSONObject jsonPayload) {
+        sLaunchNotification = jsonPayload;
+    }
+
+    private void handleLaunchNotification() {
+        if (isInForeground() && sLaunchNotification != null) {
+            javascriptEventCallback(sLaunchNotification);
+            sLaunchNotification = null;
+        }
+    }
+}
